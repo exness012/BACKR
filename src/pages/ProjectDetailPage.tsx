@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { Project } from '../types';
-import { getProjectById } from '../lib/api';
+import { getProjectById, subscribeProject, getProject } from '../lib/api';
 import { shortenAddress, explorerAddressUrl } from '../lib/solana';
 import { FundingPanel } from '../components/FundingPanel';
 import { MilestoneTimeline } from '../components/MilestoneTimeline';
@@ -16,7 +16,9 @@ import {
   Layers, 
   Compass, 
   Sparkles,
-  Users
+  Users,
+  RefreshCw,
+  AlertCircle
 } from 'lucide-react';
 
 interface ProjectDetailPageProps {
@@ -25,20 +27,99 @@ interface ProjectDetailPageProps {
 
 export const ProjectDetailPage: React.FC<ProjectDetailPageProps> = ({ onProjectsUpdated }) => {
   const { id } = useParams<{ id: string }>();
-  const [project, setProject] = useState<Project | null>(null);
+  const [project, setProject] = useState<Project | null>(() => (id ? getProjectById(id) || null : null));
   const [activeTab, setActiveTab] = useState<'overview' | 'roadmap' | 'ledger'>('overview');
+  const [loading, setLoading] = useState<boolean>(!project);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
-  const refreshProject = () => {
-    if (id) {
-      const p = getProjectById(id);
+  useEffect(() => {
+    if (!id) return;
+    setLoading(!project);
+    setFetchError(null);
+
+    // Initial explicit async fetch
+    getProject(id)
+      .then((p) => {
+        if (p) setProject(p);
+      })
+      .catch((err) => {
+        console.error('Failed to load project from Firestore:', err);
+        setFetchError('Failed to load project details from Firebase.');
+      })
+      .finally(() => setLoading(false));
+
+    // Real-time listener
+    const unsubscribe = subscribeProject(
+      id,
+      (updatedProject) => {
+        setProject(updatedProject);
+        setLoading(false);
+        setFetchError(null);
+        onProjectsUpdated?.();
+      },
+      (err) => {
+        console.error('Project listener error:', err);
+        setFetchError('Connection error with Firebase.');
+        setLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [id]);
+
+  const refreshProject = async () => {
+    if (!id) return;
+    try {
+      const p = await getProject(id);
       if (p) setProject(p);
       onProjectsUpdated?.();
+    } catch (err) {
+      console.warn('Refresh project failed:', err);
     }
   };
 
-  useEffect(() => {
-    refreshProject();
-  }, [id]);
+  const handleRetry = async () => {
+    if (!id) return;
+    setLoading(true);
+    setFetchError(null);
+    try {
+      const p = await getProject(id);
+      setProject(p);
+    } catch {
+      setFetchError('Retry failed. Please check network connection.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="max-w-6xl mx-auto px-4 py-8 space-y-8 animate-pulse">
+        <div className="w-full h-64 bg-[#100f17] border border-[#24222f] rounded-2xl" />
+        <div className="h-10 w-1/3 bg-[#100f17] rounded-xl" />
+        <div className="h-32 w-full bg-[#100f17] rounded-xl" />
+      </div>
+    );
+  }
+
+  if (fetchError) {
+    return (
+      <div className="max-w-md mx-auto px-4 py-24 text-center space-y-4">
+        <div className="w-12 h-12 mx-auto rounded-full bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400">
+          <AlertCircle className="w-6 h-6" />
+        </div>
+        <h2 className="text-xl font-bold text-white">Connection Error</h2>
+        <p className="text-xs text-[#8d8a9c]">{fetchError}</p>
+        <button
+          onClick={handleRetry}
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#a78bfa] hover:bg-[#c4b5fd] text-[#09080f] font-semibold text-xs cursor-pointer"
+        >
+          <RefreshCw className="w-3.5 h-3.5" />
+          <span>Retry</span>
+        </button>
+      </div>
+    );
+  }
 
   if (!project) {
     return (

@@ -13,7 +13,8 @@ import { CreateProjectPage } from './pages/CreateProjectPage';
 import { LedgerPage } from './pages/LedgerPage';
 import { AboutPage } from './pages/AboutPage';
 import { DocsPage } from './pages/DocsPage';
-import { getStoredProjects } from './lib/api';
+import { getStoredProjects, subscribeProjects } from './lib/api';
+import { testFirebaseConnection } from './lib/firebase';
 import { Project } from './types';
 import { Search, X, ArrowRight } from 'lucide-react';
 
@@ -23,8 +24,17 @@ const MainApp: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const navigate = useNavigate();
 
+  // Subscribe to real-time project updates from Firestore
+  useEffect(() => {
+    testFirebaseConnection();
+    const unsubscribe = subscribeProjects((updated) => {
+      setProjects(updated);
+    });
+    return () => unsubscribe();
+  }, []);
+
   const reloadProjects = () => {
-    setProjects(getStoredProjects());
+    // Realtime listener handles this, kept for manual trigger compatibility
   };
 
   // Keyboard shortcut Ctrl/Cmd+K for search

@@ -97,8 +97,8 @@ export const MilestoneTimeline: React.FC<MilestoneTimelineProps> = ({
         memo: `{"app":"launchpad","type":"milestone","project":"${project.id}","milestone":${activeModalMilestone.order}}`,
       });
 
-      // Update in storage
-      updateProjectMilestone(project.id, activeModalMilestone.id, signature, proofNote);
+      // Update in Firestore backend
+      await updateProjectMilestone(project.id, activeModalMilestone.id, signature, proofNote);
 
       setActiveModalMilestone(null);
       setProofNote('');

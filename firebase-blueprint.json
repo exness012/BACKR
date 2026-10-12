@@ -1,0 +1,76 @@
+{
+  "entities": {
+    "Project": {
+      "title": "Project",
+      "description": "Metadata for a launchpad campaign. Financial totals and pledges are always computed on-chain.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "number" },
+        "name": { "type": "string", "maxLength": 100 },
+        "tagline": { "type": "string", "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 5000 },
+        "category": { "type": "string", "maxLength": 100 },
+        "logoUrl": { "type": "string", "maxLength": 2000 },
+        "bannerUrl": { "type": "string", "maxLength": 2000 },
+        "founderAddress": { "type": "string", "maxLength": 64 },
+        "treasuryAddress": { "type": "string", "maxLength": 64 },
+        "goalSol": { "type": "number" },
+        "deadline": { "type": "string", "maxLength": 30 },
+        "launchDate": { "type": "string", "maxLength": 30 },
+        "type": { "type": "string", "maxLength": 50 },
+        "allocation": { "type": "string", "maxLength": 50 },
+        "status": { "type": "string", "maxLength": 30 },
+        "websiteUrl": { "type": "string", "maxLength": 500 },
+        "twitterUrl": { "type": "string", "maxLength": 500 },
+        "discordUrl": { "type": "string", "maxLength": 500 },
+        "tokenomics": { "type": "object" },
+        "founders": { "type": "array" },
+        "schemaVersion": { "type": "number" }
+      },
+      "required": [
+        "id",
+        "createdAt",
+        "name",
+        "tagline",
+        "description",
+        "category",
+        "founderAddress",
+        "treasuryAddress",
+        "goalSol",
+        "deadline",
+        "type",
+        "status"
+      ]
+    },
+    "Milestone": {
+      "title": "Milestone",
+      "description": "Roadmap milestone for a campaign.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "order": { "type": "number" },
+        "title": { "type": "string", "maxLength": 120 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "targetDate": { "type": "string", "maxLength": 30 },
+        "unlockSol": { "type": "number" },
+        "status": { "type": "string", "maxLength": 30 },
+        "txSignature": { "type": "string", "maxLength": 128 },
+        "completedAt": { "type": "string", "maxLength": 50 },
+        "proofNote": { "type": "string", "maxLength": 500 },
+        "proofUrl": { "type": "string", "maxLength": 500 }
+      },
+      "required": ["id", "order", "title", "description", "unlockSol", "status"]
+    }
+  },
+  "firestore": {
+    "/projects/{projectId}": {
+      "schema": "Project",
+      "description": "Collection of launchpad project campaign metadata documents."
+    },
+    "/projects/{projectId}/milestones/{milestoneId}": {
+      "schema": "Milestone",
+      "description": "Subcollection of milestone roadmaps for a given project."
+    }
+  }
+}

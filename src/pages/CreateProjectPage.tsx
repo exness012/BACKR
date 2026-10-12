@@ -251,34 +251,47 @@ export const CreateProjectPage: React.FC<CreateProjectPageProps> = ({ onProjectC
     setMilestones(updated);
   };
 
-  const handlePublish = () => {
+  const [isPublishing, setIsPublishing] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<string | null>(null);
+
+  const handlePublish = async () => {
+    setErrorMsg(null);
+
     if (!connected || !publicKey) {
       setErrorMsg('Please connect your Solana wallet to publish.');
+      openWalletModal();
       return;
     }
 
     if (!name.trim()) {
       setErrorMsg('Project name is required.');
+      setStep(1);
+      return;
+    }
+
+    const solGoal = parseFloat(goalSol);
+    if (isNaN(solGoal) || solGoal <= 0) {
+      setErrorMsg('Goal in SOL must be greater than 0.');
+      setStep(2);
       return;
     }
 
     const norm = getNormalizedFounders();
     if (!norm.valid) {
-      setErrorMsg(norm.error || 'Please fill in founder details correctly.');
-      setValidationAttempted(true);
+      setErrorMsg(norm.error || 'At least one founder with a valid name is required.');
+      setStep(1);
       return;
     }
 
-    const solGoal = parseFloat(goalSol) || 100;
-    const uniqueId = crypto.randomUUID();
-    const createdAt = Date.now();
+    setIsPublishing(true);
+    setUploadStatus('Preparing project campaign…');
 
     const newProject: Project = {
-      id: uniqueId,
-      createdAt,
-      name,
-      tagline: tagline || 'Decentralized web3 project building on Solana Devnet',
-      description: description || 'Next-generation project funded by community supporters on Solana Devnet.',
+      id: crypto.randomUUID(),
+      createdAt: Date.now(),
+      name: sanitizeText(name),
+      tagline: sanitizeText(tagline) || 'Next-generation crypto venture building on Solana Devnet',
+      description: sanitizeText(description) || 'Detailed project roadmap and milestone delivery.',
       category,
       logoUrl,
       bannerUrl,
@@ -311,11 +324,17 @@ export const CreateProjectPage: React.FC<CreateProjectPageProps> = ({ onProjectC
     };
 
     try {
-      saveProject(newProject);
+      await saveProject(newProject, {
+        onStatusUpdate: (status) => setUploadStatus(status),
+      });
       onProjectCreated?.();
       navigate(`/project/${newProject.id}`);
     } catch (err: unknown) {
-      setErrorMsg(err instanceof Error ? err.message : 'Failed to save project. Local storage quota may be exceeded.');
+      console.error('Project creation failed:', err);
+      setErrorMsg(err instanceof Error ? err.message : 'Failed to publish campaign to Firebase.');
+    } finally {
+      setIsPublishing(false);
+      setUploadStatus(null);
     }
   };
 
@@ -1061,15 +1080,31 @@ export const CreateProjectPage: React.FC<CreateProjectPageProps> = ({ onProjectC
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
           ) : (
-            <button
-              type="button"
-              onClick={handlePublish}
-              disabled={!connected}
-              className="px-6 py-2.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-purple-500 to-indigo-500 hover:from-purple-400 hover:to-indigo-400 flex items-center gap-1.5 cursor-pointer shadow-lg shadow-purple-600/40 ml-auto disabled:opacity-50"
-            >
-              <Sparkles className="w-3.5 h-3.5" />
-              <span>Publish Campaign</span>
-            </button>
+            <div className="flex items-center gap-3 ml-auto">
+              {uploadStatus && (
+                <span className="text-xs text-[#a78bfa] animate-pulse">
+                  {uploadStatus}
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={handlePublish}
+                disabled={!connected || isPublishing}
+                className="px-6 py-2.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-purple-500 to-indigo-500 hover:from-purple-400 hover:to-indigo-400 flex items-center gap-1.5 cursor-pointer shadow-lg shadow-purple-600/40 ml-auto disabled:opacity-50"
+              >
+                {isPublishing ? (
+                  <>
+                    <div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    <span>Publishing…</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>Publish Campaign</span>
+                  </>
+                )}
+              </button>
+            </div>
           )}
         </div>
       </div>

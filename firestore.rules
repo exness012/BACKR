@@ -1,0 +1,63 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Projects collection
+    match /projects/{projectId} {
+      allow read: if true;
+
+      allow create: if isValidId(projectId)
+        && incoming().id == projectId
+        && incoming().name is string && incoming().name.size() > 0 && incoming().name.size() <= 100
+        && incoming().tagline is string && incoming().tagline.size() <= 200
+        && incoming().description is string && incoming().description.size() <= 5000
+        && incoming().category is string && incoming().category.size() <= 100
+        && incoming().founderAddress is string && incoming().founderAddress.size() <= 64
+        && incoming().treasuryAddress is string && incoming().treasuryAddress.size() <= 64
+        && incoming().goalSol is number && incoming().goalSol >= 0
+        && incoming().deadline is string && incoming().deadline.size() <= 50
+        && incoming().type is string && incoming().type.size() <= 50
+        && incoming().status is string && incoming().status.size() <= 50;
+
+      allow update: if isValidId(projectId)
+        && incoming().id == existing().id
+        && incoming().founderAddress == existing().founderAddress
+        && incoming().treasuryAddress == existing().treasuryAddress
+        && incoming().goalSol == existing().goalSol;
+
+      allow delete: if false;
+
+      // Milestones subcollection
+      match /milestones/{milestoneId} {
+        allow read: if true;
+
+        allow create, update: if isValidId(projectId) && isValidId(milestoneId)
+          && incoming().id == milestoneId
+          && incoming().order is number
+          && incoming().title is string && incoming().title.size() <= 120
+          && incoming().description is string && incoming().description.size() <= 1000
+          && incoming().unlockSol is number
+          && incoming().status is string;
+
+        allow delete: if false;
+      }
+    }
+  }
+}
