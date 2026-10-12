@@ -8,7 +8,9 @@ import {
   clusterApiUrl,
 } from '@solana/web3.js';
 
-export const DEVNET_ENDPOINT = clusterApiUrl('devnet');
+export const DEVNET_ENDPOINT =
+  (typeof import.meta !== 'undefined' && import.meta.env?.VITE_SOLANA_RPC_URL) ||
+  clusterApiUrl('devnet');
 export const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
 
 // In-Memory RPC Cache & In-Flight Request Deduplication to prevent 429 rate limits

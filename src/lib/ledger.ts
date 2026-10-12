@@ -178,10 +178,18 @@ export interface ProjectChainData {
   treasuryBalance: number | null;
 }
 
+interface LedgerQueryCacheEntry {
+  data: LedgerEntry[];
+  timestamp: number;
+}
+const ledgerQueryCache = new Map<string, LedgerQueryCacheEntry>();
+const inFlightLedgerQueries = new Map<string, Promise<LedgerEntry[]>>();
+
 /**
  * Fetch real on-chain transaction history for a treasury address directly from Solana Devnet.
  * Strictly filters to verified Launchpad contributions & milestones matching the specific project ID.
  * Never includes airdrops, self-transfers, or transfers for other projects.
+ * Results are cached for 15s and duplicate requests are deduplicated.
  */
 export async function fetchProjectLedger(
   connection: Connection,
@@ -205,6 +213,44 @@ export async function fetchProjectLedger(
     projectName = projectOrTreasury.name;
   }
 
+  const cacheKey = `${treasuryAddress}:${projectId || ''}:${projectCreatedAt || 0}`;
+  const now = Date.now();
+  const cached = ledgerQueryCache.get(cacheKey);
+  if (cached && now - cached.timestamp < 15000) {
+    return cached.data;
+  }
+
+  if (inFlightLedgerQueries.has(cacheKey)) {
+    return inFlightLedgerQueries.get(cacheKey)!;
+  }
+
+  const queryPromise = (async () => {
+    try {
+      const res = await executeFetchProjectLedger(
+        connection,
+        treasuryAddress,
+        projectId,
+        projectCreatedAt,
+        projectName
+      );
+      ledgerQueryCache.set(cacheKey, { data: res, timestamp: Date.now() });
+      return res;
+    } finally {
+      inFlightLedgerQueries.delete(cacheKey);
+    }
+  })();
+
+  inFlightLedgerQueries.set(cacheKey, queryPromise);
+  return queryPromise;
+}
+
+async function executeFetchProjectLedger(
+  connection: Connection,
+  treasuryAddress: string,
+  projectId?: string,
+  projectCreatedAt?: number,
+  projectName?: string
+): Promise<LedgerEntry[]> {
   let pubkey: PublicKey;
   try {
     pubkey = new PublicKey(treasuryAddress);
@@ -212,10 +258,10 @@ export async function fetchProjectLedger(
     return [];
   }
 
-  // Fetch confirmed signatures from Solana Devnet
+  // Fetch confirmed signatures from Solana Devnet (limit 25 as per perf requirement)
   let confirmedSignatures: { signature: string; slot: number; err: unknown; blockTime?: number | null; confirmationStatus?: string }[] = [];
   try {
-    confirmedSignatures = await connection.getSignaturesForAddress(pubkey, { limit: 20 });
+    confirmedSignatures = await connection.getSignaturesForAddress(pubkey, { limit: 25 });
   } catch (error) {
     console.warn('Devnet getSignaturesForAddress rate limit or network notice:', error);
     return verifiedRegistry.filter(

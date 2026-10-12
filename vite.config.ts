@@ -33,5 +33,23 @@ export default defineConfig(() => {
         },
       },
     },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks(id: string) {
+            if (id.includes('@solana')) {
+              return 'solana-core';
+            }
+            if (id.includes('firebase')) {
+              return 'firebase-core';
+            }
+            if (id.includes('recharts')) {
+              return 'charts';
+            }
+          },
+        },
+      },
+      chunkSizeWarningLimit: 1200,
+    },
   };
 });

@@ -4,6 +4,8 @@ import { useWallet } from '@solana/wallet-adapter-react';
 import { useWalletModal } from '../context/WalletModalContext';
 import { Project, Milestone, ProjectType, Founder, FounderSocials } from '../types';
 import { saveProject } from '../lib/api';
+import { uploadProjectAsset } from '../lib/storage';
+import { ensureWalletAuthSession } from '../lib/auth';
 import { shortenAddress } from '../lib/solana';
 import { normalizeUrl, normalizeSocialLink, sanitizeText } from '../lib/avatar';
 import { ImageUpload } from '../components/ImageUpload';
@@ -18,7 +20,10 @@ import {
   ShieldCheck, 
   Wallet, 
   AlertCircle,
-  Users
+  Users,
+  CheckCircle2,
+  RefreshCw,
+  Loader2
 } from 'lucide-react';
 
 export interface FounderFormItem {
@@ -40,8 +45,11 @@ interface CreateProjectPageProps {
 
 export const CreateProjectPage: React.FC<CreateProjectPageProps> = ({ onProjectCreated }) => {
   const navigate = useNavigate();
-  const { publicKey, connected } = useWallet();
+  const { publicKey, connected, signMessage } = useWallet();
   const { openWalletModal } = useWalletModal();
+
+  // Persistent unique project ID for background uploads
+  const [projectId] = useState<string>(() => crypto.randomUUID());
 
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
 
@@ -55,6 +63,16 @@ export const CreateProjectPage: React.FC<CreateProjectPageProps> = ({ onProjectC
   const [websiteUrl, setWebsiteUrl] = useState('');
   const [twitterUrl, setTwitterUrl] = useState('');
   const [discordUrl, setDiscordUrl] = useState('');
+
+  // Background upload tracking maps
+  const [uploadedUrls, setUploadedUrls] = useState<Record<string, string>>({});
+  const [uploadProgressMap, setUploadProgressMap] = useState<Record<string, number>>({});
+
+  // Publishing status & step-by-step progress
+  const [isPublishing, setIsPublishing] = useState(false);
+  const [activePublishStep, setActivePublishStep] = useState<'idle' | 'uploading' | 'saving' | 'done'>('idle');
+  const [failedStep, setFailedStep] = useState<'uploading' | 'saving' | null>(null);
+  const [overallUploadPercent, setOverallUploadPercent] = useState(0);
 
   // Founders state
   const [founders, setFounders] = useState<FounderFormItem[]>([
@@ -251,9 +269,6 @@ export const CreateProjectPage: React.FC<CreateProjectPageProps> = ({ onProjectC
     setMilestones(updated);
   };
 
-  const [isPublishing, setIsPublishing] = useState(false);
-  const [uploadStatus, setUploadStatus] = useState<string | null>(null);
-
   const handlePublish = async () => {
     setErrorMsg(null);
 
@@ -284,30 +299,53 @@ export const CreateProjectPage: React.FC<CreateProjectPageProps> = ({ onProjectC
     }
 
     setIsPublishing(true);
-    setUploadStatus('Preparing project campaign…');
+    setFailedStep(null);
+    setErrorMsg(null);
+    setActivePublishStep('saving');
 
+    // Step 0: Ensure wallet session
+    try {
+      await ensureWalletAuthSession(publicKey.toBase58(), signMessage);
+    } catch (authErr) {
+      console.warn('Session verification notice:', authErr);
+    }
+
+    // Prepare clean deadline string (YYYY-MM-DD string)
+    const cleanDeadline = (deadline || new Date().toISOString().split('T')[0]).slice(0, 50);
+
+    // Initial project payload with immediate image URLs or data URLs/fallbacks
     const newProject: Project = {
-      id: crypto.randomUUID(),
+      id: projectId,
       createdAt: Date.now(),
-      name: sanitizeText(name),
-      tagline: sanitizeText(tagline) || 'Next-generation crypto venture building on Solana Devnet',
-      description: sanitizeText(description) || 'Detailed project roadmap and milestone delivery.',
-      category,
-      logoUrl,
-      bannerUrl,
+      name: sanitizeText(name).trim() || 'Untitled Project',
+      tagline: sanitizeText(tagline).trim() || 'Next-generation crypto venture building on Solana Devnet',
+      description: sanitizeText(description).trim() || 'Detailed project roadmap and milestone delivery.',
+      category: category || 'Infrastructure & AI',
+      logoUrl: uploadedUrls.logo || logoUrl || '',
+      bannerUrl: uploadedUrls.banner || bannerUrl || '',
       founderAddress: publicKey.toBase58(),
       treasuryAddress: publicKey.toBase58(),
       goalSol: solGoal,
-      deadline,
+      deadline: cleanDeadline,
       launchDate: 'Q4 2026',
-      type,
+      type: type || 'Crowdfund',
       allocation: '10% Supply',
       status: 'live',
-      websiteUrl: websiteUrl || 'https://solana.com',
-      twitterUrl: twitterUrl || 'https://x.com',
-      discordUrl: discordUrl || 'https://discord.com',
-      milestones,
-      founders: norm.founders,
+      websiteUrl: websiteUrl || '',
+      twitterUrl: twitterUrl || '',
+      discordUrl: discordUrl || '',
+      milestones: (milestones || []).map((m, idx) => ({
+        ...m,
+        order: typeof m.order === 'number' ? m.order : idx + 1,
+        title: m.title || `Phase ${idx + 1}`,
+        description: m.description || '',
+        unlockSol: typeof m.unlockSol === 'number' ? m.unlockSol : 0,
+        status: m.status || 'upcoming',
+      })),
+      founders: norm.founders.map((f) => ({
+        ...f,
+        avatar: uploadedUrls[f.id] || f.avatar || '',
+      })),
       tokenomics: {
         tokenName: tokenName || `${name} Token`,
         tokenSymbol: tokenSymbol.toUpperCase() || 'TK',
@@ -323,18 +361,29 @@ export const CreateProjectPage: React.FC<CreateProjectPageProps> = ({ onProjectC
       },
     };
 
+    // Save project document and milestones to Firestore first (non-blocking on image uploads)
     try {
-      await saveProject(newProject, {
-        onStatusUpdate: (status) => setUploadStatus(status),
-      });
+      await saveProject(newProject);
+      setActivePublishStep('done');
+
+      // Optimistic immediate navigation
       onProjectCreated?.();
       navigate(`/project/${newProject.id}`);
     } catch (err: unknown) {
-      console.error('Project creation failed:', err);
-      setErrorMsg(err instanceof Error ? err.message : 'Failed to publish campaign to Firebase.');
-    } finally {
+      console.error('[BACKR Publish Error]', err);
+      setFailedStep('saving');
+
+      // Extract exact Firebase error message and code
+      let formattedMsg = 'Failed to save project campaign.';
+      try {
+        const parsed = JSON.parse(err instanceof Error ? err.message : String(err));
+        formattedMsg = `${parsed.code ? `[${parsed.code}] ` : ''}${parsed.error || 'Permission denied or schema mismatch'}`;
+      } catch {
+        formattedMsg = err instanceof Error ? err.message : String(err);
+      }
+
+      setErrorMsg(formattedMsg);
       setIsPublishing(false);
-      setUploadStatus(null);
     }
   };
 
@@ -489,13 +538,26 @@ export const CreateProjectPage: React.FC<CreateProjectPageProps> = ({ onProjectC
             <div>
               <ImageUpload
                 label="Project Banner"
-                helperText="Recommended 1500x500px (3:1), PNG/JPG/WEBP, max 4MB"
+                helperText="Recommended 1200x400px (3:1), WebP/PNG/JPG, max 4MB"
                 aspectRatio="3:1"
                 maxSizeMB={4}
                 maxWidth={1200}
                 maxHeight={400}
                 value={bannerUrl}
-                onChange={setBannerUrl}
+                onChange={(dataUrl) => {
+                  setBannerUrl(dataUrl);
+                  if (dataUrl && dataUrl.startsWith('data:')) {
+                    uploadProjectAsset(`projects/${projectId}/banner.webp`, dataUrl, (pct) => {
+                      setUploadProgressMap((prev) => ({ ...prev, banner: pct }));
+                    })
+                      .then((url) => {
+                        setUploadedUrls((prev) => ({ ...prev, banner: url }));
+                      })
+                      .catch((err) => {
+                        console.warn('Background banner upload error, will retry on Publish:', err);
+                      });
+                  }
+                }}
               />
             </div>
 
@@ -504,13 +566,26 @@ export const CreateProjectPage: React.FC<CreateProjectPageProps> = ({ onProjectC
               <div>
                 <ImageUpload
                   label="Project Logo"
-                  helperText="Square image recommended, PNG/JPG/WEBP, max 2MB"
+                  helperText="Square image recommended 256x256, WebP/PNG/JPG, max 2MB"
                   aspectRatio="square"
                   maxSizeMB={2}
                   maxWidth={256}
                   maxHeight={256}
                   value={logoUrl}
-                  onChange={setLogoUrl}
+                  onChange={(dataUrl) => {
+                    setLogoUrl(dataUrl);
+                    if (dataUrl && dataUrl.startsWith('data:')) {
+                      uploadProjectAsset(`projects/${projectId}/logo.webp`, dataUrl, (pct) => {
+                        setUploadProgressMap((prev) => ({ ...prev, logo: pct }));
+                      })
+                        .then((url) => {
+                          setUploadedUrls((prev) => ({ ...prev, logo: url }));
+                        })
+                        .catch((err) => {
+                          console.warn('Background logo upload error, will retry on Publish:', err);
+                        });
+                    }
+                  }}
                 />
               </div>
 
@@ -653,7 +728,24 @@ export const CreateProjectPage: React.FC<CreateProjectPageProps> = ({ onProjectC
                             maxWidth={256}
                             maxHeight={256}
                             value={f.avatar}
-                            onChange={(dataUrl) => updateFounder(f.id, 'avatar', dataUrl)}
+                            onChange={(dataUrl) => {
+                              updateFounder(f.id, 'avatar', dataUrl);
+                              if (dataUrl && dataUrl.startsWith('data:')) {
+                                uploadProjectAsset(
+                                  `projects/${projectId}/founders/${f.id}.webp`,
+                                  dataUrl,
+                                  (pct) => {
+                                    setUploadProgressMap((prev) => ({ ...prev, [f.id]: pct }));
+                                  }
+                                )
+                                  .then((url) => {
+                                    setUploadedUrls((prev) => ({ ...prev, [f.id]: url }));
+                                  })
+                                  .catch((err) => {
+                                    console.warn(`Background avatar upload error for ${f.id}, will retry on Publish:`, err);
+                                  });
+                              }
+                            }}
                             uploadButtonText="Photo"
                           />
                         </div>
@@ -1080,17 +1172,71 @@ export const CreateProjectPage: React.FC<CreateProjectPageProps> = ({ onProjectC
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
           ) : (
-            <div className="flex items-center gap-3 ml-auto">
-              {uploadStatus && (
-                <span className="text-xs text-[#a78bfa] animate-pulse">
-                  {uploadStatus}
-                </span>
+            <div className="flex flex-col sm:flex-row items-end sm:items-center gap-3 ml-auto">
+              {/* Step-by-Step Progress & Status */}
+              {isPublishing && (
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[#16151f] border border-[#24222f] text-xs">
+                  {/* Uploading Images */}
+                  <div className="flex items-center gap-1.5">
+                    {activePublishStep === 'saving' || activePublishStep === 'done' ? (
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                    ) : (
+                      <Loader2 className="w-3.5 h-3.5 text-[#a78bfa] animate-spin" />
+                    )}
+                    <span className={activePublishStep === 'uploading' ? 'text-white font-medium' : 'text-[#8d8a9c]'}>
+                      Uploading images
+                    </span>
+                  </div>
+
+                  <span className="text-[#8d8a9c]/40">•</span>
+
+                  {/* Saving Project */}
+                  <div className="flex items-center gap-1.5">
+                    {activePublishStep === 'done' ? (
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                    ) : activePublishStep === 'saving' ? (
+                      <Loader2 className="w-3.5 h-3.5 text-[#a78bfa] animate-spin" />
+                    ) : (
+                      <div className="w-2 h-2 rounded-full bg-white/20" />
+                    )}
+                    <span className={activePublishStep === 'saving' ? 'text-white font-medium' : 'text-[#8d8a9c]'}>
+                      Saving project
+                    </span>
+                  </div>
+
+                  <span className="text-[#8d8a9c]/40">•</span>
+
+                  {/* Done */}
+                  <div className="flex items-center gap-1.5">
+                    {activePublishStep === 'done' ? (
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                    ) : (
+                      <div className="w-2 h-2 rounded-full bg-white/20" />
+                    )}
+                    <span className={activePublishStep === 'done' ? 'text-emerald-400 font-medium' : 'text-[#8d8a9c]'}>
+                      Done
+                    </span>
+                  </div>
+                </div>
               )}
+
+              {/* Retry button if specific step failed */}
+              {failedStep && !isPublishing && (
+                <button
+                  type="button"
+                  onClick={handlePublish}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/30 text-rose-300 flex items-center gap-1.5 cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Retry {failedStep === 'uploading' ? 'Uploads' : 'Save'}</span>
+                </button>
+              )}
+
               <button
                 type="button"
                 onClick={handlePublish}
                 disabled={!connected || isPublishing}
-                className="px-6 py-2.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-purple-500 to-indigo-500 hover:from-purple-400 hover:to-indigo-400 flex items-center gap-1.5 cursor-pointer shadow-lg shadow-purple-600/40 ml-auto disabled:opacity-50"
+                className="px-6 py-2.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-purple-500 to-indigo-500 hover:from-purple-400 hover:to-indigo-400 flex items-center gap-1.5 cursor-pointer shadow-lg shadow-purple-600/40 disabled:opacity-50"
               >
                 {isPublishing ? (
                   <>

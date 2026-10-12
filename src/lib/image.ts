@@ -24,15 +24,46 @@ export function validateImage(file: File, maxSizeMB: number): ImageValidationRes
   return { valid: true };
 }
 
+export interface ResizeResult {
+  dataUrl: string;
+  sizeBytes: number;
+  width: number;
+  height: number;
+}
+
 /**
- * Resizes an image client-side to keep under maximum dimension and compresses to WebP/JPEG data URL
+ * Calculates human readable file size
+ */
+export function formatBytes(bytes: number, decimals = 1): string {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+}
+
+/**
+ * Helper to calculate byte size from base64 data URL
+ */
+export function getDataUrlByteLength(dataUrl: string): number {
+  const parts = dataUrl.split(',');
+  if (parts.length < 2) return 0;
+  const base64Str = parts[1];
+  const padding = base64Str.endsWith('==') ? 2 : base64Str.endsWith('=') ? 1 : 0;
+  return Math.floor((base64Str.length * 3) / 4) - padding;
+}
+
+/**
+ * Resizes an image client-side to keep under maximum dimension and compresses to WebP/JPEG data URL.
+ * Skips re-compression if the file is already WebP, within dimension bounds, and smaller than target.
  */
 export async function resizeToDataUrl(
   file: File,
   maxWidth: number,
   maxHeight: number,
-  quality = 0.8
-): Promise<string> {
+  quality = 0.75
+): Promise<ResizeResult> {
   return new Promise((resolve, reject) => {
     const objectUrl = URL.createObjectURL(file);
     const img = new Image();
@@ -40,14 +71,39 @@ export async function resizeToDataUrl(
     img.onload = () => {
       URL.revokeObjectURL(objectUrl);
 
-      let targetWidth = img.width;
-      let targetHeight = img.height;
+      const origWidth = img.width;
+      const origHeight = img.height;
+
+      // If already within bounds, is webp, and reasonable size, we can read directly without re-compression
+      if (
+        file.type === 'image/webp' &&
+        origWidth <= maxWidth &&
+        origHeight <= maxHeight &&
+        file.size < 500 * 1024
+      ) {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const res = reader.result as string;
+          resolve({
+            dataUrl: res,
+            sizeBytes: file.size,
+            width: origWidth,
+            height: origHeight,
+          });
+        };
+        reader.onerror = () => reject(new Error('Failed reading WebP file directly'));
+        reader.readAsDataURL(file);
+        return;
+      }
+
+      let targetWidth = origWidth;
+      let targetHeight = origHeight;
 
       // Calculate scaled dimensions keeping aspect ratio
       if (targetWidth > maxWidth || targetHeight > maxHeight) {
         const ratio = Math.min(maxWidth / targetWidth, maxHeight / targetHeight);
-        targetWidth = Math.round(targetWidth * ratio);
-        targetHeight = Math.round(targetHeight * ratio);
+        targetWidth = Math.max(1, Math.round(targetWidth * ratio));
+        targetHeight = Math.max(1, Math.round(targetHeight * ratio));
       }
 
       const canvas = document.createElement('canvas');
@@ -66,12 +122,19 @@ export async function resizeToDataUrl(
       ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
 
       try {
-        // Try WebP first, fallback to JPEG if browser doesn't export webp
+        // Try WebP at requested quality (0.75)
         let dataUrl = canvas.toDataURL('image/webp', quality);
         if (!dataUrl.startsWith('data:image/webp')) {
           dataUrl = canvas.toDataURL('image/jpeg', quality);
         }
-        resolve(dataUrl);
+        const sizeBytes = getDataUrlByteLength(dataUrl);
+
+        resolve({
+          dataUrl,
+          sizeBytes,
+          width: targetWidth,
+          height: targetHeight,
+        });
       } catch (err) {
         reject(err instanceof Error ? err : new Error('Failed to encode image to data URL.'));
       }

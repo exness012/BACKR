@@ -1,6 +1,6 @@
 import React, { useState, useRef, DragEvent, ChangeEvent } from 'react';
-import { validateImage, resizeToDataUrl } from '../lib/image';
-import { UploadCloud, Image as ImageIcon, X, RefreshCw, Loader2, AlertCircle } from 'lucide-react';
+import { validateImage, resizeToDataUrl, formatBytes, getDataUrlByteLength } from '../lib/image';
+import { UploadCloud, X, RefreshCw, Loader2, AlertCircle } from 'lucide-react';
 
 export interface ImageUploadProps {
   label?: string;
@@ -10,9 +10,10 @@ export interface ImageUploadProps {
   maxWidth: number;
   maxHeight: number;
   value?: string;
-  onChange: (dataUrl: string | undefined) => void;
+  onChange: (dataUrl: string | undefined, sizeBytes?: number) => void;
   circular?: boolean;
   uploadButtonText?: string;
+  onFileSelected?: (file: File) => void;
 }
 
 export const ImageUpload: React.FC<ImageUploadProps> = ({
@@ -26,10 +27,18 @@ export const ImageUpload: React.FC<ImageUploadProps> = ({
   onChange,
   circular = false,
   uploadButtonText,
+  onFileSelected,
 }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [fileSizeBytes, setFileSizeBytes] = useState<number | null>(() => {
+    if (value && value.startsWith('data:')) {
+      return getDataUrlByteLength(value);
+    }
+    return null;
+  });
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const processFile = async (file: File) => {
@@ -40,10 +49,15 @@ export const ImageUpload: React.FC<ImageUploadProps> = ({
       return;
     }
 
+    if (onFileSelected) {
+      onFileSelected(file);
+    }
+
     setIsProcessing(true);
     try {
-      const dataUrl = await resizeToDataUrl(file, maxWidth, maxHeight, 0.8);
-      onChange(dataUrl);
+      const result = await resizeToDataUrl(file, maxWidth, maxHeight, 0.75);
+      setFileSizeBytes(result.sizeBytes);
+      onChange(result.dataUrl, result.sizeBytes);
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : 'Error processing image');
     } finally {
@@ -78,7 +92,6 @@ export const ImageUpload: React.FC<ImageUploadProps> = ({
     if (e.target.files && e.target.files.length > 0) {
       const file = e.target.files[0];
       await processFile(file);
-      // Reset input value so re-uploading the same file triggers change
       e.target.value = '';
     }
   };
@@ -86,6 +99,7 @@ export const ImageUpload: React.FC<ImageUploadProps> = ({
   const handleRemove = (e: React.MouseEvent) => {
     e.stopPropagation();
     setErrorMessage(null);
+    setFileSizeBytes(null);
     onChange(undefined);
   };
 
@@ -114,46 +128,55 @@ export const ImageUpload: React.FC<ImageUploadProps> = ({
 
       {value ? (
         // Preview State
-        <div
-          className={`relative overflow-hidden border border-white/15 bg-[#100f17] group transition-all shrink-0 ${
-            circular
-              ? 'w-20 h-20 rounded-full'
-              : isSquare
-              ? 'w-[120px] h-[120px] rounded-2xl'
-              : 'w-full aspect-[3/1] rounded-2xl'
-          }`}
-        >
-          <img
-            src={value}
-            alt={label || 'Uploaded preview'}
-            className={`w-full h-full object-cover ${circular ? 'rounded-full' : 'rounded-2xl'}`}
-          />
-
-          {/* Action overlay */}
+        <div className="space-y-1">
           <div
-            className={`absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1.5 p-1 ${
-              circular ? 'rounded-full flex-col' : ''
+            className={`relative overflow-hidden border border-white/15 bg-[#100f17] group transition-all shrink-0 ${
+              circular
+                ? 'w-20 h-20 rounded-full'
+                : isSquare
+                ? 'w-[120px] h-[120px] rounded-2xl'
+                : 'w-full aspect-[3/1] rounded-2xl'
             }`}
           >
-            <button
-              type="button"
-              onClick={handleTriggerBrowse}
-              className="p-1 px-1.5 rounded-lg bg-white/20 hover:bg-white/30 text-white text-[10px] font-medium flex items-center gap-1 transition-colors cursor-pointer shadow-md"
-              title="Replace image"
+            <img
+              src={value}
+              alt={label || 'Uploaded preview'}
+              className={`w-full h-full object-cover ${circular ? 'rounded-full' : 'rounded-2xl'}`}
+            />
+
+            {/* Action overlay */}
+            <div
+              className={`absolute inset-0 bg-black/70 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1.5 p-1 ${
+                circular ? 'rounded-full flex-col' : ''
+              }`}
             >
-              <RefreshCw className="w-2.5 h-2.5" />
-              <span>Replace</span>
-            </button>
-            <button
-              type="button"
-              onClick={handleRemove}
-              className="p-1 px-1.5 rounded-lg bg-rose-500/80 hover:bg-rose-500 text-white text-[10px] font-medium flex items-center gap-1 transition-colors cursor-pointer shadow-md"
-              title="Remove image"
-            >
-              <X className="w-2.5 h-2.5" />
-              <span>Remove</span>
-            </button>
+              <button
+                type="button"
+                onClick={handleTriggerBrowse}
+                className="p-1 px-1.5 rounded-lg bg-white/20 hover:bg-white/30 text-white text-[10px] font-medium flex items-center gap-1 transition-colors cursor-pointer shadow-md"
+                title="Replace image"
+              >
+                <RefreshCw className="w-2.5 h-2.5" />
+                <span>Replace</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleRemove}
+                className="p-1 px-1.5 rounded-lg bg-rose-500/80 hover:bg-rose-500 text-white text-[10px] font-medium flex items-center gap-1 transition-colors cursor-pointer shadow-md"
+                title="Remove image"
+              >
+                <X className="w-2.5 h-2.5" />
+                <span>Remove</span>
+              </button>
+            </div>
           </div>
+
+          {/* Show final file size under preview */}
+          {fileSizeBytes !== null && fileSizeBytes > 0 && (
+            <div className="text-[10px] text-[#8d8a9c] font-mono">
+              WebP ~ {formatBytes(fileSizeBytes)}
+            </div>
+          )}
         </div>
       ) : (
         // Dropzone State

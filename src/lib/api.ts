@@ -3,10 +3,11 @@ import {
   doc,
   getDocs,
   getDoc,
-  setDoc,
+  writeBatch,
   updateDoc,
   query,
   orderBy,
+  limit,
   onSnapshot,
   Unsubscribe,
 } from 'firebase/firestore';
@@ -27,6 +28,7 @@ export interface FirestoreErrorInfo {
   error: string;
   operationType: OperationType;
   path: string | null;
+  code?: string;
   authInfo: {
     userId?: string | null;
     email?: string | null;
@@ -45,8 +47,12 @@ export function handleFirestoreError(
   operationType: OperationType,
   path: string | null
 ): never {
+  const errCode = (error as { code?: string })?.code;
+  const errMsg = error instanceof Error ? error.message : String(error);
+
   const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
+    error: errMsg,
+    code: errCode,
     authInfo: {
       userId: auth.currentUser?.uid,
       email: auth.currentUser?.email,
@@ -62,42 +68,163 @@ export function handleFirestoreError(
     operationType,
     path,
   };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
+
+  console.error('Firestore Error:', JSON.stringify(errInfo));
+  if (import.meta.env?.DEV) {
+    console.error('[BACKR Firebase Error Detail]', {
+      code: errCode,
+      message: errMsg,
+      path,
+      operationType,
+    });
+  }
+
   throw new Error(JSON.stringify(errInfo));
 }
 
-// In-memory cache for synchronous fallbacks
+// In-memory cache for fast UI access
 let cachedProjects: Project[] = [];
 
 /**
  * Migration helper to strip any financial fields (raisedSol, backerCount, contributions)
- * so on-chain Solana remains the sole source of truth for funds.
+ * and ensure no undefined fields exist before database operations.
  */
 export function sanitizeProjectObject(rawProject: unknown): Project {
   const p = (rawProject || {}) as Record<string, unknown>;
   const { raisedSol, backerCount, contributions, ...clean } = p;
+
   return {
-    ...clean,
+    id: typeof clean.id === 'string' ? clean.id : '',
+    name: typeof clean.name === 'string' ? clean.name : '',
+    tagline: typeof clean.tagline === 'string' ? clean.tagline : '',
+    description: typeof clean.description === 'string' ? clean.description : '',
+    category: typeof clean.category === 'string' ? clean.category : 'Infrastructure & AI',
+    founderAddress: typeof clean.founderAddress === 'string' ? clean.founderAddress : '',
+    treasuryAddress: typeof clean.treasuryAddress === 'string' ? clean.treasuryAddress : '',
+    goalSol: typeof clean.goalSol === 'number' && !isNaN(clean.goalSol) ? clean.goalSol : 0,
+    deadline: typeof clean.deadline === 'string' ? clean.deadline : '',
+    launchDate: typeof clean.launchDate === 'string' ? clean.launchDate : 'Q4 2026',
+    type: (typeof clean.type === 'string' ? clean.type : 'Crowdfund') as Project['type'],
+    allocation: typeof clean.allocation === 'string' ? clean.allocation : '10% Supply',
+    status: (typeof clean.status === 'string' ? clean.status : 'live') as Project['status'],
+    websiteUrl: typeof clean.websiteUrl === 'string' ? clean.websiteUrl : '',
+    twitterUrl: typeof clean.twitterUrl === 'string' ? clean.twitterUrl : '',
+    discordUrl: typeof clean.discordUrl === 'string' ? clean.discordUrl : '',
+    logoUrl: typeof clean.logoUrl === 'string' ? clean.logoUrl : '',
+    bannerUrl: typeof clean.bannerUrl === 'string' ? clean.bannerUrl : '',
     createdAt: typeof clean.createdAt === 'number' ? clean.createdAt : Date.now(),
-    founders: Array.isArray(clean.founders) ? clean.founders : [],
     milestones: Array.isArray(clean.milestones) ? clean.milestones : [],
-  } as Project;
+    founders: Array.isArray(clean.founders) ? clean.founders : [],
+    tokenomics: clean.tokenomics ? (clean.tokenomics as Project['tokenomics']) : {
+      tokenName: '',
+      tokenSymbol: '',
+      totalSupply: '100,000,000',
+      backerTokensPerSol: 1000,
+      vestingNote: '',
+      distribution: [],
+    },
+  };
 }
 
 /**
- * Synchronous project getter from cache (keeps compatibility with existing components)
+ * Builds the exact document payload that matches the Firestore security rules.
+ * Never includes undefined values: strings default to "" and numbers to 0.
+ */
+export function buildFirestoreProjectPayload(project: Project): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    id: project.id || '',
+    name: (project.name || '').trim().slice(0, 100),
+    tagline: (project.tagline || '').trim().slice(0, 200),
+    description: (project.description || '').trim().slice(0, 5000),
+    category: (project.category || 'Infrastructure & AI').trim().slice(0, 100),
+    founderAddress: (project.founderAddress || '').trim().slice(0, 64),
+    treasuryAddress: (project.treasuryAddress || '').trim().slice(0, 64),
+    goalSol: typeof project.goalSol === 'number' && !isNaN(project.goalSol) ? project.goalSol : 0,
+    deadline: (project.deadline || new Date().toISOString().split('T')[0]).slice(0, 50),
+    type: (project.type || 'Crowdfund').slice(0, 50),
+    status: (project.status || 'live').slice(0, 50),
+    // Extra allowed fields
+    logoUrl: project.logoUrl || '',
+    bannerUrl: project.bannerUrl || '',
+    createdAt: typeof project.createdAt === 'number' ? project.createdAt : Date.now(),
+    launchDate: project.launchDate || 'Q4 2026',
+    allocation: project.allocation || '10% Supply',
+    websiteUrl: project.websiteUrl || '',
+    twitterUrl: project.twitterUrl || '',
+    discordUrl: project.discordUrl || '',
+    founders: (project.founders || []).map((f) => ({
+      id: f.id || '',
+      name: f.name || '',
+      role: f.role || '',
+      bio: f.bio || '',
+      avatar: f.avatar || '',
+      socials: {
+        x: f.socials?.x || '',
+        linkedin: f.socials?.linkedin || '',
+        github: f.socials?.github || '',
+        telegram: f.socials?.telegram || '',
+        discord: f.socials?.discord || '',
+        website: f.socials?.website || '',
+      },
+    })),
+    tokenomics: project.tokenomics || {
+      tokenName: '',
+      tokenSymbol: '',
+      totalSupply: '100,000,000',
+      backerTokensPerSol: 1000,
+      vestingNote: '',
+      distribution: [],
+    },
+    schemaVersion: 1,
+  };
+
+  return payload;
+}
+
+/**
+ * Builds the exact milestone document payload for projects/{id}/milestones/{milestoneId}
+ */
+export function buildFirestoreMilestonePayload(milestone: Milestone, defaultIndex = 1): Record<string, unknown> {
+  return {
+    id: milestone.id || '',
+    order: typeof milestone.order === 'number' ? milestone.order : defaultIndex,
+    title: (milestone.title || `Phase ${defaultIndex}`).slice(0, 120),
+    description: (milestone.description || '').slice(0, 1000),
+    targetDate: milestone.targetDate || '',
+    unlockSol: typeof milestone.unlockSol === 'number' ? milestone.unlockSol : 0,
+    status: milestone.status || 'upcoming',
+    txSignature: milestone.txSignature || '',
+    completedAt: milestone.completedAt || '',
+    proofNote: milestone.proofNote || '',
+  };
+}
+
+/**
+ * Synchronous project getter from cache
  */
 export function getStoredProjects(): Project[] {
   return cachedProjects;
 }
 
 /**
- * Fetch all projects from Firestore (with milestones subcollection merged)
+ * Optimistically add or update a project in cache without waiting for refetches
  */
-export async function listProjects(): Promise<Project[]> {
+export function addProjectToCache(project: Project): void {
+  const index = cachedProjects.findIndex((p) => p.id === project.id);
+  if (index >= 0) {
+    cachedProjects[index] = project;
+  } else {
+    cachedProjects = [project, ...cachedProjects];
+  }
+}
+
+/**
+ * Fetch projects from Firestore with optional limit (defaults to 20 for faster startup)
+ */
+export async function listProjects(limitCount = 20): Promise<Project[]> {
   const path = 'projects';
   try {
-    const q = query(collection(db, path), orderBy('createdAt', 'desc'));
+    const q = query(collection(db, path), orderBy('createdAt', 'desc'), limit(limitCount));
     const snapshot = await getDocs(q);
     const projects: Project[] = [];
 
@@ -105,19 +232,32 @@ export async function listProjects(): Promise<Project[]> {
       const data = projectDoc.data();
       const project = sanitizeProjectObject({ ...data, id: projectDoc.id });
 
-      // Fetch milestones subcollection
-      try {
-        const milestonesSnap = await getDocs(
-          query(collection(db, `projects/${projectDoc.id}/milestones`), orderBy('order', 'asc'))
-        );
-        if (!milestonesSnap.empty) {
-          project.milestones = milestonesSnap.docs.map((mDoc) => ({
-            ...mDoc.data(),
-            id: mDoc.id,
-          })) as Milestone[];
+      // If milestones array is not on doc, fetch from subcollection
+      if (!project.milestones || project.milestones.length === 0) {
+        try {
+          const milestonesSnap = await getDocs(
+            query(collection(db, `projects/${projectDoc.id}/milestones`), orderBy('order', 'asc'))
+          );
+          if (!milestonesSnap.empty) {
+            project.milestones = milestonesSnap.docs.map((mDoc) => {
+              const mData = mDoc.data();
+              return {
+                id: mDoc.id,
+                order: typeof mData.order === 'number' ? mData.order : 1,
+                title: mData.title || '',
+                description: mData.description || '',
+                targetDate: mData.targetDate || '',
+                unlockSol: typeof mData.unlockSol === 'number' ? mData.unlockSol : 0,
+                status: mData.status || 'upcoming',
+                txSignature: mData.txSignature || '',
+                completedAt: mData.completedAt || '',
+                proofNote: mData.proofNote || '',
+              };
+            });
+          }
+        } catch {
+          // ignore subcollection milestone read failures
         }
-      } catch (mErr) {
-        console.warn(`Could not fetch milestones subcollection for ${projectDoc.id}:`, mErr);
       }
 
       projects.push(project);
@@ -130,36 +270,31 @@ export async function listProjects(): Promise<Project[]> {
   }
 }
 
+let activeCollectionUnsubscribe: Unsubscribe | null = null;
+
 /**
- * Subscribe to real-time project updates
+ * Subscribe to real-time project updates (limited to 20 documents, cleans up prior listener)
  */
 export function subscribeProjects(
   onUpdate: (projects: Project[]) => void,
+  limitCount = 20,
   onError?: (err: Error) => void
 ): Unsubscribe {
-  const path = 'projects';
-  const q = query(collection(db, path), orderBy('createdAt', 'desc'));
+  if (activeCollectionUnsubscribe) {
+    activeCollectionUnsubscribe();
+    activeCollectionUnsubscribe = null;
+  }
 
-  return onSnapshot(
+  const path = 'projects';
+  const q = query(collection(db, path), orderBy('createdAt', 'desc'), limit(limitCount));
+
+  const unsubscribe = onSnapshot(
     q,
-    async (snapshot) => {
+    (snapshot) => {
       try {
         const projects: Project[] = [];
         for (const projectDoc of snapshot.docs) {
           const project = sanitizeProjectObject({ ...projectDoc.data(), id: projectDoc.id });
-          try {
-            const milestonesSnap = await getDocs(
-              query(collection(db, `projects/${projectDoc.id}/milestones`), orderBy('order', 'asc'))
-            );
-            if (!milestonesSnap.empty) {
-              project.milestones = milestonesSnap.docs.map((mDoc) => ({
-                ...mDoc.data(),
-                id: mDoc.id,
-              })) as Milestone[];
-            }
-          } catch {
-            // Milestone subcollection optional fallback
-          }
           projects.push(project);
         }
         cachedProjects = projects;
@@ -172,10 +307,18 @@ export function subscribeProjects(
       handleFirestoreError(error, OperationType.LIST, path);
     }
   );
+
+  activeCollectionUnsubscribe = unsubscribe;
+  return () => {
+    unsubscribe();
+    if (activeCollectionUnsubscribe === unsubscribe) {
+      activeCollectionUnsubscribe = null;
+    }
+  };
 }
 
 /**
- * Fetch a single project by ID (including milestones subcollection)
+ * Fetch a single project by ID (including milestones)
  */
 export async function getProject(id: string): Promise<Project | null> {
   const path = `projects/${id}`;
@@ -187,29 +330,34 @@ export async function getProject(id: string): Promise<Project | null> {
 
     const project = sanitizeProjectObject({ ...docSnap.data(), id: docSnap.id });
 
-    // Fetch subcollection milestones
-    try {
-      const milestonesSnap = await getDocs(
-        query(collection(db, `projects/${id}/milestones`), orderBy('order', 'asc'))
-      );
-      if (!milestonesSnap.empty) {
-        project.milestones = milestonesSnap.docs.map((mDoc) => ({
-          ...mDoc.data(),
-          id: mDoc.id,
-        })) as Milestone[];
+    if (!project.milestones || project.milestones.length === 0) {
+      try {
+        const milestonesSnap = await getDocs(
+          query(collection(db, `projects/${id}/milestones`), orderBy('order', 'asc'))
+        );
+        if (!milestonesSnap.empty) {
+          project.milestones = milestonesSnap.docs.map((mDoc) => {
+            const mData = mDoc.data();
+            return {
+              id: mDoc.id,
+              order: typeof mData.order === 'number' ? mData.order : 1,
+              title: mData.title || '',
+              description: mData.description || '',
+              targetDate: mData.targetDate || '',
+              unlockSol: typeof mData.unlockSol === 'number' ? mData.unlockSol : 0,
+              status: mData.status || 'upcoming',
+              txSignature: mData.txSignature || '',
+              completedAt: mData.completedAt || '',
+              proofNote: mData.proofNote || '',
+            };
+          });
+        }
+      } catch (mErr) {
+        console.warn(`Could not fetch milestones subcollection for ${id}:`, mErr);
       }
-    } catch (mErr) {
-      console.warn(`Could not fetch milestones subcollection for ${id}:`, mErr);
     }
 
-    // Update in cachedProjects
-    const index = cachedProjects.findIndex((p) => p.id === id);
-    if (index >= 0) {
-      cachedProjects[index] = project;
-    } else {
-      cachedProjects.push(project);
-    }
-
+    addProjectToCache(project);
     return project;
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, path);
@@ -217,7 +365,7 @@ export async function getProject(id: string): Promise<Project | null> {
 }
 
 /**
- * Backward-compatible synchronous getter with cache lookup
+ * Synchronous getter with cache lookup
  */
 export function getProjectById(id: string): Project | undefined {
   return cachedProjects.find((p) => p.id === id);
@@ -234,7 +382,7 @@ export function subscribeProject(
   const path = `projects/${id}`;
   return onSnapshot(
     doc(db, 'projects', id),
-    async (docSnap) => {
+    (docSnap) => {
       try {
         if (!docSnap.exists()) {
           onUpdate(null);
@@ -242,25 +390,7 @@ export function subscribeProject(
         }
 
         const project = sanitizeProjectObject({ ...docSnap.data(), id: docSnap.id });
-
-        try {
-          const milestonesSnap = await getDocs(
-            query(collection(db, `projects/${id}/milestones`), orderBy('order', 'asc'))
-          );
-          if (!milestonesSnap.empty) {
-            project.milestones = milestonesSnap.docs.map((mDoc) => ({
-              ...mDoc.data(),
-              id: mDoc.id,
-            })) as Milestone[];
-          }
-        } catch {
-          // ignore subcollection read errors
-        }
-
-        const idx = cachedProjects.findIndex((p) => p.id === id);
-        if (idx >= 0) cachedProjects[idx] = project;
-        else cachedProjects.push(project);
-
+        addProjectToCache(project);
         onUpdate(project);
       } catch (err) {
         if (onError) onError(err instanceof Error ? err : new Error(String(err)));
@@ -273,119 +403,146 @@ export function subscribeProject(
 }
 
 export interface CreateProjectProgressCallbacks {
-  onStatusUpdate?: (step: string) => void;
-  onLogoProgress?: (progress: number) => void;
-  onBannerProgress?: (progress: number) => void;
-  onFounderProgress?: (founderId: string, progress: number) => void;
+  onStepProgress?: (step: 'uploading' | 'saving' | 'done') => void;
+  onStatusUpdate?: (status: string) => void;
+  onOverallProgress?: (progress: number) => void;
 }
 
 /**
- * Creates a project in Firestore, uploading images to Firebase Storage first
+ * Creates a project document and its milestones in a single atomic batch write.
+ * Image uploads are non-blocking: saves immediately with fallbacks if uploads take >20s,
+ * then background-updates image URLs in Firestore.
  */
 export async function createProject(
   rawProject: Project,
   callbacks?: CreateProjectProgressCallbacks
 ): Promise<Project> {
+  const isDev = import.meta.env?.DEV;
+  const startTime = performance.now();
   const projectId = rawProject.id || crypto.randomUUID();
-  callbacks?.onStatusUpdate?.('Uploading project assets to Firebase Storage…');
 
-  let finalLogoUrl = rawProject.logoUrl;
-  let finalBannerUrl = rawProject.bannerUrl;
+  callbacks?.onStepProgress?.('saving');
+  callbacks?.onStatusUpdate?.('Writing project and milestones in atomic batch…');
 
-  // 1. Upload Logo if data URL
-  if (rawProject.logoUrl && rawProject.logoUrl.startsWith('data:')) {
-    try {
-      callbacks?.onStatusUpdate?.('Uploading logo…');
-      finalLogoUrl = await uploadProjectAsset(
-        `projects/${projectId}/logo.webp`,
-        rawProject.logoUrl,
-        callbacks?.onLogoProgress
-      );
-    } catch (err) {
-      console.warn('Failed to upload logo to Storage, preserving data URL fallback:', err);
-    }
-  }
-
-  // 2. Upload Banner if data URL
-  if (rawProject.bannerUrl && rawProject.bannerUrl.startsWith('data:')) {
-    try {
-      callbacks?.onStatusUpdate?.('Uploading banner…');
-      finalBannerUrl = await uploadProjectAsset(
-        `projects/${projectId}/banner.webp`,
-        rawProject.bannerUrl,
-        callbacks?.onBannerProgress
-      );
-    } catch (err) {
-      console.warn('Failed to upload banner to Storage, preserving data URL fallback:', err);
-    }
-  }
-
-  // 3. Upload Founder Avatars if data URLs
-  const updatedFounders = [];
-  if (rawProject.founders && rawProject.founders.length > 0) {
-    for (const f of rawProject.founders) {
-      let avatar = f.avatar;
-      if (avatar && avatar.startsWith('data:')) {
-        try {
-          callbacks?.onStatusUpdate?.(`Uploading avatar for ${f.name}…`);
-          avatar = await uploadProjectAsset(
-            `projects/${projectId}/founders/${f.id}.webp`,
-            avatar,
-            (progress) => callbacks?.onFounderProgress?.(f.id, progress)
-          );
-        } catch (err) {
-          console.warn(`Failed to upload avatar for ${f.name}:`, err);
-        }
-      }
-      updatedFounders.push({ ...f, avatar });
-    }
-  }
-
-  callbacks?.onStatusUpdate?.('Saving campaign metadata to Firestore…');
-
+  // Clean local representations
   const cleanProject: Project = sanitizeProjectObject({
     ...rawProject,
     id: projectId,
-    logoUrl: finalLogoUrl,
-    bannerUrl: finalBannerUrl,
-    founders: updatedFounders,
-    schemaVersion: 1,
   });
 
   const path = `projects/${projectId}`;
-  try {
-    // Save main project document (excluding subcollection milestones in main document if preferred,
-    // or keeping milestones array on doc for quick listing while syncing subcollection)
-    await setDoc(doc(db, 'projects', projectId), cleanProject);
+  const projectDocPayload = buildFirestoreProjectPayload(cleanProject);
 
-    // Save milestones to subcollection projects/{id}/milestones
-    if (cleanProject.milestones && cleanProject.milestones.length > 0) {
-      for (const milestone of cleanProject.milestones) {
-        const milestonePath = `projects/${projectId}/milestones/${milestone.id}`;
-        try {
-          await setDoc(doc(db, 'projects', projectId, 'milestones', milestone.id), {
-            id: milestone.id,
-            order: milestone.order,
-            title: milestone.title,
-            description: milestone.description,
-            targetDate: milestone.targetDate,
-            unlockSol: milestone.unlockSol,
-            status: milestone.status,
-            txSignature: milestone.txSignature || '',
-            completedAt: milestone.completedAt || '',
-            proofNote: milestone.proofNote || '',
-          });
-        } catch (mErr) {
-          console.error(`Failed to write subcollection milestone at ${milestonePath}:`, mErr);
-        }
+  if (isDev) {
+    console.log('[BACKR Save Payload - Project Doc]', projectDocPayload);
+  }
+
+  // 1. Atomic writeBatch for project doc + all subcollection milestones
+  const batch = writeBatch(db);
+  const projectRef = doc(db, 'projects', projectId);
+  batch.set(projectRef, projectDocPayload);
+
+  if (cleanProject.milestones && cleanProject.milestones.length > 0) {
+    for (let i = 0; i < cleanProject.milestones.length; i++) {
+      const m = cleanProject.milestones[i];
+      const milestoneRef = doc(db, 'projects', projectId, 'milestones', m.id);
+      const milestonePayload = buildFirestoreMilestonePayload(m, i + 1);
+      if (isDev) {
+        console.log(`[BACKR Save Payload - Milestone ${m.id}]`, milestonePayload);
       }
+      batch.set(milestoneRef, milestonePayload);
+    }
+  }
+
+  const writeStart = performance.now();
+  try {
+    await batch.commit();
+
+    const writeElapsed = performance.now() - writeStart;
+    const totalElapsed = performance.now() - startTime;
+    if (isDev) {
+      console.log(`[BACKR Perf] Firestore writeBatch committed in ${writeElapsed.toFixed(1)}ms (total ${totalElapsed.toFixed(1)}ms)`);
     }
 
-    cachedProjects = [cleanProject, ...cachedProjects.filter((p) => p.id !== projectId)];
+    callbacks?.onStepProgress?.('done');
+    callbacks?.onStatusUpdate?.('Campaign saved successfully!');
+
+    // Optimistically update cache immediately
+    addProjectToCache(cleanProject);
+
+    // 2. Non-blocking background image attachment (if any pending uploads remain)
+    triggerNonBlockingImageUpdates(projectId, rawProject);
+
     return cleanProject;
   } catch (error) {
-    handleFirestoreError(error, OperationType.CREATE, path);
+    if (isDev) {
+      const errObj = error as { code?: string; message?: string };
+      console.error('[BACKR writeBatch FAILED]', {
+        code: errObj?.code,
+        message: errObj?.message,
+        payload: projectDocPayload,
+      });
+    }
+    handleFirestoreError(error, OperationType.WRITE, path);
   }
+}
+
+/**
+ * Background updater: uploads data-URL images (logo, banner, founders) with 20s timeout,
+ * and patches Firestore document with the resulting public download URLs.
+ */
+function triggerNonBlockingImageUpdates(projectId: string, rawProject: Project) {
+  setTimeout(async () => {
+    try {
+      const updates: Record<string, unknown> = {};
+
+      if (rawProject.logoUrl && rawProject.logoUrl.startsWith('data:')) {
+        try {
+          const logoUrl = await uploadProjectAsset(`projects/${projectId}/logo.webp`, rawProject.logoUrl, undefined, 20000);
+          updates.logoUrl = logoUrl;
+        } catch (e) {
+          console.warn('[BACKR Background Logo Upload]', e);
+        }
+      }
+
+      if (rawProject.bannerUrl && rawProject.bannerUrl.startsWith('data:')) {
+        try {
+          const bannerUrl = await uploadProjectAsset(`projects/${projectId}/banner.webp`, rawProject.bannerUrl, undefined, 20000);
+          updates.bannerUrl = bannerUrl;
+        } catch (e) {
+          console.warn('[BACKR Background Banner Upload]', e);
+        }
+      }
+
+      if (rawProject.founders && rawProject.founders.length > 0) {
+        const updatedFounders = [];
+        let hasFounderUpload = false;
+        for (const f of rawProject.founders) {
+          if (f.avatar && f.avatar.startsWith('data:')) {
+            try {
+              const avatarUrl = await uploadProjectAsset(`projects/${projectId}/founders/${f.id}.webp`, f.avatar, undefined, 20000);
+              updatedFounders.push({ ...f, avatar: avatarUrl });
+              hasFounderUpload = true;
+            } catch {
+              updatedFounders.push(f);
+            }
+          } else {
+            updatedFounders.push(f);
+          }
+        }
+        if (hasFounderUpload) {
+          updates.founders = updatedFounders;
+        }
+      }
+
+      if (Object.keys(updates).length > 0) {
+        await updateDoc(doc(db, 'projects', projectId), updates);
+        console.log(`[BACKR Background Image Update Completed for ${projectId}]`);
+      }
+    } catch (err) {
+      console.warn('[BACKR Background image update notice]:', err);
+    }
+  }, 50);
 }
 
 /**
@@ -410,7 +567,6 @@ export async function updateProjectMilestone(
 ): Promise<Project | undefined> {
   const path = `projects/${projectId}/milestones/${milestoneId}`;
   try {
-    // 1. Fetch current project
     const project = await getProject(projectId);
     if (!project) return undefined;
 
@@ -429,7 +585,6 @@ export async function updateProjectMilestone(
     const updatedMilestones = [...project.milestones];
     updatedMilestones[milestoneIndex] = updatedMilestone;
 
-    // Advance next milestone to in_progress if upcoming
     if (
       milestoneIndex + 1 < updatedMilestones.length &&
       updatedMilestones[milestoneIndex + 1].status === 'upcoming'
@@ -440,42 +595,41 @@ export async function updateProjectMilestone(
       };
     }
 
-    // 2. Update Firestore subcollection milestone document
-    try {
-      await updateDoc(doc(db, 'projects', projectId, 'milestones', milestoneId), {
-        status: 'completed',
-        txSignature,
-        completedAt,
-        proofNote: updatedMilestone.proofNote,
-      });
-
-      if (
-        milestoneIndex + 1 < updatedMilestones.length &&
-        updatedMilestones[milestoneIndex + 1].status === 'in_progress'
-      ) {
-        await updateDoc(
-          doc(db, 'projects', projectId, 'milestones', updatedMilestones[milestoneIndex + 1].id),
-          { status: 'in_progress' }
-        );
-      }
-    } catch (subErr) {
-      console.warn('Subcollection update notice:', subErr);
-    }
-
-    // 3. Update main project document
     const updatedProject: Project = {
       ...project,
       milestones: updatedMilestones,
     };
 
-    await updateDoc(doc(db, 'projects', projectId), {
-      milestones: updatedMilestones,
+    // Atomic batch update for milestone document and parent project document
+    const batch = writeBatch(db);
+    const mRef = doc(db, 'projects', projectId, 'milestones', milestoneId);
+    batch.update(mRef, {
+      status: 'completed',
+      txSignature,
+      completedAt,
+      proofNote: updatedMilestone.proofNote,
     });
 
-    // Update in cache
-    const idx = cachedProjects.findIndex((p) => p.id === projectId);
-    if (idx >= 0) cachedProjects[idx] = updatedProject;
+    if (
+      milestoneIndex + 1 < updatedMilestones.length &&
+      updatedMilestones[milestoneIndex + 1].status === 'in_progress'
+    ) {
+      const nextRef = doc(
+        db,
+        'projects',
+        projectId,
+        'milestones',
+        updatedMilestones[milestoneIndex + 1].id
+      );
+      batch.update(nextRef, { status: 'in_progress' });
+    }
 
+    const pRef = doc(db, 'projects', projectId);
+    batch.update(pRef, { milestones: updatedMilestones });
+
+    await batch.commit();
+
+    addProjectToCache(updatedProject);
     return updatedProject;
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);

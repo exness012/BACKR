@@ -22,17 +22,19 @@ export function dataUrlToBlob(dataUrl: string): Blob {
 }
 
 /**
- * Uploads an image (File or base64 data URL) to Firebase Storage and returns the public download URL
+ * Uploads an image (File or base64 data URL) to Firebase Storage and returns the public download URL.
+ * Supports timeoutMs (defaults to 20,000ms = 20s).
  */
 export async function uploadProjectAsset(
   path: string,
   imageInput: File | string,
-  onProgress?: UploadProgressCallback
+  onProgress?: UploadProgressCallback,
+  timeoutMs = 20000
 ): Promise<string> {
   let blob: Blob;
 
   if (typeof imageInput === 'string') {
-    // If it's already an https URL (e.g. from previous upload or avatar service), return as-is
+    // If it's already an https URL, return as-is
     if (imageInput.startsWith('http://') || imageInput.startsWith('https://')) {
       return imageInput;
     }
@@ -47,6 +49,23 @@ export async function uploadProjectAsset(
   });
 
   return new Promise((resolve, reject) => {
+    let isSettled = false;
+    let timer: NodeJS.Timeout | null = null;
+
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => {
+        if (!isSettled) {
+          isSettled = true;
+          try {
+            uploadTask.cancel();
+          } catch {
+            // ignore cancel error
+          }
+          reject(new Error(`Storage upload timed out after ${timeoutMs / 1000}s for ${path}`));
+        }
+      }, timeoutMs);
+    }
+
     uploadTask.on(
       'state_changed',
       (snapshot) => {
@@ -56,15 +75,23 @@ export async function uploadProjectAsset(
         }
       },
       (error) => {
-        console.error(`Storage upload error at ${path}:`, error);
-        reject(error);
+        if (timer) clearTimeout(timer);
+        if (!isSettled) {
+          isSettled = true;
+          console.error(`Storage upload error at ${path}:`, error);
+          reject(error);
+        }
       },
       async () => {
-        try {
-          const downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
-          resolve(downloadUrl);
-        } catch (err) {
-          reject(err);
+        if (timer) clearTimeout(timer);
+        if (!isSettled) {
+          isSettled = true;
+          try {
+            const downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
+            resolve(downloadUrl);
+          } catch (err) {
+            reject(err);
+          }
         }
       }
     );

@@ -8,15 +8,36 @@ import { ShootingStars } from './components/ShootingStars';
 import { Footer } from './components/Footer';
 import { HomePage } from './pages/HomePage';
 import { ProjectsPage } from './pages/ProjectsPage';
-import { ProjectDetailPage } from './pages/ProjectDetailPage';
-import { CreateProjectPage } from './pages/CreateProjectPage';
-import { LedgerPage } from './pages/LedgerPage';
-import { AboutPage } from './pages/AboutPage';
-import { DocsPage } from './pages/DocsPage';
 import { getStoredProjects, subscribeProjects } from './lib/api';
 import { testFirebaseConnection } from './lib/firebase';
 import { Project } from './types';
-import { Search, X, ArrowRight } from 'lucide-react';
+import { Search, X, ArrowRight, Loader2 } from 'lucide-react';
+
+// Lazy-load heavy components and documentation
+const ProjectDetailPage = React.lazy(() =>
+  import('./pages/ProjectDetailPage').then((m) => ({ default: m.ProjectDetailPage }))
+);
+const CreateProjectPage = React.lazy(() =>
+  import('./pages/CreateProjectPage').then((m) => ({ default: m.CreateProjectPage }))
+);
+const LedgerPage = React.lazy(() =>
+  import('./pages/LedgerPage').then((m) => ({ default: m.LedgerPage }))
+);
+const AboutPage = React.lazy(() =>
+  import('./pages/AboutPage').then((m) => ({ default: m.AboutPage }))
+);
+const DocsPage = React.lazy(() =>
+  import('./pages/DocsPage').then((m) => ({ default: m.DocsPage }))
+);
+
+const PageLoaderFallback = () => (
+  <div className="min-h-[50vh] flex items-center justify-center">
+    <div className="flex items-center gap-2 text-xs text-[#a78bfa]">
+      <Loader2 className="w-4 h-4 animate-spin" />
+      <span>Loading…</span>
+    </div>
+  </div>
+);
 
 const MainApp: React.FC = () => {
   const [projects, setProjects] = useState<Project[]>(getStoredProjects);
@@ -24,17 +45,17 @@ const MainApp: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const navigate = useNavigate();
 
-  // Subscribe to real-time project updates from Firestore
+  // Subscribe to real-time project updates from Firestore (limited to 20 documents, cleans up on unmount)
   useEffect(() => {
     testFirebaseConnection();
     const unsubscribe = subscribeProjects((updated) => {
       setProjects(updated);
-    });
+    }, 20);
     return () => unsubscribe();
   }, []);
 
   const reloadProjects = () => {
-    // Realtime listener handles this, kept for manual trigger compatibility
+    // Kept for backward compatibility
   };
 
   // Keyboard shortcut Ctrl/Cmd+K for search
@@ -75,24 +96,26 @@ const MainApp: React.FC = () => {
 
       {/* Main Content Area */}
       <main className="flex-1 relative z-10">
-        <Routes>
-          <Route path="/" element={<HomePage projects={projects} />} />
-          <Route path="/projects" element={<ProjectsPage projects={projects} />} />
-          <Route
-            path="/project/:id"
-            element={<ProjectDetailPage onProjectsUpdated={reloadProjects} />}
-          />
-          <Route
-            path="/create"
-            element={<CreateProjectPage onProjectCreated={reloadProjects} />}
-          />
-          <Route path="/ledger" element={<LedgerPage projects={projects} />} />
-          <Route path="/about" element={<AboutPage />} />
-          <Route path="/docs" element={<DocsPage />} />
-          <Route path="/docs/:slug" element={<DocsPage />} />
-          <Route path="/articles" element={<Navigate to="/docs" replace />} />
-          <Route path="*" element={<HomePage projects={projects} />} />
-        </Routes>
+        <React.Suspense fallback={<PageLoaderFallback />}>
+          <Routes>
+            <Route path="/" element={<HomePage projects={projects} />} />
+            <Route path="/projects" element={<ProjectsPage projects={projects} />} />
+            <Route
+              path="/project/:id"
+              element={<ProjectDetailPage onProjectsUpdated={reloadProjects} />}
+            />
+            <Route
+              path="/create"
+              element={<CreateProjectPage onProjectCreated={reloadProjects} />}
+            />
+            <Route path="/ledger" element={<LedgerPage projects={projects} />} />
+            <Route path="/about" element={<AboutPage />} />
+            <Route path="/docs" element={<DocsPage />} />
+            <Route path="/docs/:slug" element={<DocsPage />} />
+            <Route path="/articles" element={<Navigate to="/docs" replace />} />
+            <Route path="*" element={<HomePage projects={projects} />} />
+          </Routes>
+        </React.Suspense>
       </main>
 
       {/* Footer with informational disclaimer */}
