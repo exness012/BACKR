@@ -1,0 +1,6 @@
+{
+  "name": "Launchpad - Crypto Crowdfunding",
+  "description": "Next-generation crypto crowdfunding platform powered by Solana Devnet with transparent on-chain milestone tracking and funding ledgers.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

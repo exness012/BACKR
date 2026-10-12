@@ -1,0 +1,101 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    background-color: #07060d;
+    color: #ffffff;
+  }
+}
+
+/* Background grid pattern: 120px cells with subtle 1px translucent lines */
+.bg-grid-pattern {
+  background-size: 120px 120px;
+  background-image: 
+    linear-gradient(to right, rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+}
+
+/* Glass card styling */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.035);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.glass-panel-hover:hover {
+  background: rgba(255, 255, 255, 0.055);
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+/* Glow effects */
+.purple-radial-glow {
+  background: radial-gradient(circle 800px at 50% 100%, rgba(139, 92, 246, 0.18), transparent 70%);
+}
+
+.lavender-glow {
+  box-shadow: 0 0 35px -5px rgba(168, 85, 247, 0.45);
+}
+
+.card-center-glow {
+  box-shadow: 0 10px 40px -10px rgba(139, 92, 246, 0.35);
+}
+
+/* Hide scrollbars for slick carousels */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Launchpad Progress Bar Shimmer */
+@keyframes progress-shimmer {
+  0% {
+    transform: translateX(-150%);
+  }
+  100% {
+    transform: translateX(350%);
+  }
+}
+
+.animate-progress-shimmer {
+  animation: progress-shimmer 3s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-progress-shimmer {
+    animation: none !important;
+    display: none !important;
+  }
+}
+
+/* BACKR Logo Pink Dot Subtle Pulse on Hover */
+@keyframes backr-dot-pulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.25);
+    opacity: 0.95;
+  }
+}
+
+.group:hover .backr-pink-dot,
+.backr-logo-container:hover .backr-pink-dot {
+  transform-origin: center;
+  transform-box: fill-box;
+  animation: backr-dot-pulse 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .group:hover .backr-pink-dot,
+  .backr-logo-container:hover .backr-pink-dot {
+    animation: none !important;
+  }
+}
+
+
