@@ -11,10 +11,8 @@ import {
   lamportsToSol 
 } from '../lib/solana';
 import { 
-  recordConfirmedSessionTx, 
-  fetchProjectChainData, 
-  useProjectStats,
-  fetchTreasuryBalance 
+  useProjectFunding,
+  notifyLedgerUpdated
 } from '../lib/ledger';
 import { 
   Coins, 
@@ -27,7 +25,8 @@ import {
   ShieldCheck, 
   ShieldAlert,
   Wallet,
-  Sparkles 
+  Sparkles,
+  RefreshCw
 } from 'lucide-react';
 
 interface FundingPanelProps {
@@ -42,13 +41,21 @@ export const FundingPanel: React.FC<FundingPanelProps> = ({ project, onContribut
 
   const [amount, setAmount] = useState<string>('0.5');
   const [balance, setBalance] = useState<number | null>(null);
-  const [treasuryBalance, setTreasuryBalance] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successTx, setSuccessTx] = useState<string | null>(null);
 
-  // Derived stats strictly from verified contribution rows for this project only
-  const { raisedSol, backerCount, percentFunded } = useProjectStats(project.id, project.goalSol);
+  // Derived stats strictly recomputed from Solana Devnet on every load
+  const {
+    raisedSol,
+    backerCount,
+    percentFunded,
+    treasuryBalance,
+    isLoading: isFundingLoading,
+    isError: isFundingError,
+    error: fundingError,
+    refetch: refetchFunding,
+  } = useProjectFunding(project);
 
   // Quick preset chips
   const presets = ['0.1', '0.5', '1.0', '2.0'];
@@ -60,25 +67,6 @@ export const FundingPanel: React.FC<FundingPanelProps> = ({ project, onContribut
       publicKey.toBase58() === project.treasuryAddress
     )
   );
-
-  // Fetch initial treasury balance on mount
-  useEffect(() => {
-    let isCancelled = false;
-
-    fetchTreasuryBalance(connection, project.treasuryAddress)
-      .then((bal) => {
-        if (!isCancelled && bal !== null) {
-          setTreasuryBalance(bal);
-        }
-      })
-      .catch((err) => {
-        console.warn('Could not fetch initial treasury balance:', err);
-      });
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [project.treasuryAddress, connection]);
 
   // Calculate days left
   const calculateDaysLeft = () => {
@@ -198,23 +186,12 @@ export const FundingPanel: React.FC<FundingPanelProps> = ({ project, onContribut
         colors: ['#a855f7', '#38bdf8', '#34d399', '#f43f5e'],
       });
 
-      // Record newly confirmed session transaction immediately for this project
-      recordConfirmedSessionTx({
-        signature,
-        slot: lastValidBlockHeight,
-        timestamp: Date.now(),
-        fromAddress: publicKey.toBase58(),
-        toAddress: project.treasuryAddress,
-        amountSol: solAmount,
-        type: 'contribution',
-        projectId: project.id,
-        projectName: project.name,
-        status: 'confirmed',
-        memo: `{"app":"launchpad","type":"contribution","project":"${project.id}","amount":${solAmount}}`,
-      });
-
       setSuccessTx(signature);
       await refreshBalance();
+
+      // Trigger global and local chain re-fetch
+      notifyLedgerUpdated();
+      await refetchFunding();
       onContributionSuccess?.();
     } catch (err: unknown) {
       console.error('Contribution failed:', err);
@@ -249,14 +226,43 @@ export const FundingPanel: React.FC<FundingPanelProps> = ({ project, onContribut
       {/* Progress & Raised metrics derived solely from verified contributions */}
       <div className="mt-5 space-y-4">
         <div>
+          {isFundingError ? (
+            <div className="p-3 mb-3 rounded-2xl bg-rose-950/40 border border-rose-500/30 text-rose-300 text-xs flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <AlertCircle className="w-4 h-4 flex-shrink-0 text-rose-400" />
+                <span className="truncate">Couldn't load on-chain data</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => refetchFunding()}
+                className="px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 text-[11px] font-semibold flex items-center gap-1 shrink-0 cursor-pointer"
+              >
+                <RefreshCw className="w-3 h-3" />
+                <span>Retry</span>
+              </button>
+            </div>
+          ) : null}
+
           <div className="flex items-baseline justify-between flex-wrap gap-1">
-            <span className="text-3xl font-extrabold text-white flex items-center gap-1.5 tracking-tight font-mono">
-              {raisedSol.toFixed(1)} <span className="text-xl text-purple-400 font-mono">◎</span>
-            </span>
-            <div className="flex items-center gap-2 text-xs font-mono">
-              <span className={percentFunded >= 100 ? "text-[#fde68a] font-semibold" : "text-purple-300 font-medium"}>
-                {percentFunded >= 100 ? `${percentFunded}% funded · Goal reached` : `${percentFunded}% funded`}
+            {isFundingLoading ? (
+              <div className="h-9 w-24 bg-white/10 rounded-xl animate-pulse" />
+            ) : isFundingError ? (
+              <span className="text-3xl font-extrabold text-white/50 tracking-tight font-mono">— ◎</span>
+            ) : (
+              <span className="text-3xl font-extrabold text-white flex items-center gap-1.5 tracking-tight font-mono">
+                {raisedSol.toFixed(1)} <span className="text-xl text-purple-400 font-mono">◎</span>
               </span>
+            )}
+            <div className="flex items-center gap-2 text-xs font-mono">
+              {isFundingLoading ? (
+                <div className="h-4 w-28 bg-white/10 rounded animate-pulse" />
+              ) : isFundingError ? (
+                <span className="text-rose-400">—</span>
+              ) : (
+                <span className={percentFunded >= 100 ? "text-[#fde68a] font-semibold" : "text-purple-300 font-medium"}>
+                  {percentFunded >= 100 ? `${percentFunded}% funded · Goal reached` : `${percentFunded}% funded`}
+                </span>
+              )}
               <span className="text-white/30">•</span>
               <span className="text-[#9b98ad]">
                 of {project.goalSol} SOL goal
@@ -266,7 +272,7 @@ export const FundingPanel: React.FC<FundingPanelProps> = ({ project, onContribut
 
           {/* Progress bar */}
           <div className="mt-2.5">
-            <ProgressBar value={percentFunded} size="default" />
+            <ProgressBar value={isFundingLoading ? 0 : percentFunded} size="default" />
           </div>
         </div>
 
@@ -278,7 +284,13 @@ export const FundingPanel: React.FC<FundingPanelProps> = ({ project, onContribut
             </div>
             <div>
               <span className="text-xs text-[#9b98ad] block">Backers</span>
-              <span className="text-sm font-semibold text-white">{backerCount} supporters</span>
+              {isFundingLoading ? (
+                <div className="h-4 w-12 bg-white/10 rounded mt-0.5 animate-pulse" />
+              ) : isFundingError ? (
+                <span className="text-sm font-semibold text-white/50">—</span>
+              ) : (
+                <span className="text-sm font-semibold text-white">{backerCount} supporters</span>
+              )}
             </div>
           </div>
 

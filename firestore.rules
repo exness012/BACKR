@@ -42,7 +42,7 @@ service cloud.firestore {
         && incoming().treasuryAddress == existing().treasuryAddress
         && incoming().goalSol == existing().goalSol;
 
-      allow delete: if false;
+      allow delete: if isValidId(projectId);
 
       // Milestones subcollection
       match /milestones/{milestoneId} {
@@ -56,7 +56,7 @@ service cloud.firestore {
           && incoming().unlockSol is number
           && incoming().status is string;
 
-        allow delete: if false;
+        allow delete: if isValidId(projectId) && isValidId(milestoneId);
       }
     }
   }

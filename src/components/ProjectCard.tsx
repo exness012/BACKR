@@ -1,7 +1,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { Project } from '../types';
-import { useProjectStats } from '../lib/ledger';
+import { useProjectFunding } from '../lib/ledger';
 import { ProgressBar } from './ProgressBar';
 import { FounderAvatar } from './FounderAvatar';
 import { Link2, MessageSquare } from 'lucide-react';
@@ -17,7 +17,7 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({
   isCenter = false,
   showProgress = true,
 }) => {
-  const { percentFunded } = useProjectStats(project.id, project.goalSol);
+  const { percentFunded, raisedSol, isLoading, isError } = useProjectFunding(project);
 
   return (
     <div
@@ -164,11 +164,17 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({
         <div className="px-2 mb-3">
           <div className="flex justify-between items-center text-[11px] mb-1.5 font-mono">
             <span className="text-white/60">Progress</span>
-            <span className={percentFunded >= 100 ? "text-[#fde68a] font-semibold" : "text-purple-300 font-semibold"}>
-              {percentFunded >= 100 ? `${percentFunded}% funded · Goal reached` : `${percentFunded}% funded`}
-            </span>
+            {isLoading ? (
+              <span className="w-16 h-3 bg-white/10 rounded animate-pulse" />
+            ) : isError ? (
+              <span className="text-rose-400 font-medium">—</span>
+            ) : (
+              <span className={percentFunded >= 100 ? "text-[#fde68a] font-semibold" : "text-purple-300 font-semibold"}>
+                {percentFunded >= 100 ? `${percentFunded}% funded · Goal reached` : `${percentFunded}% funded`}
+              </span>
+            )}
           </div>
-          <ProgressBar value={percentFunded} size="sm" />
+          <ProgressBar value={isLoading ? 0 : percentFunded} size="sm" />
         </div>
       )}
 
@@ -178,15 +184,23 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({
       {/* 3-Column Stats Row */}
       <div className="grid grid-cols-3 gap-2 px-2 py-2 text-left">
         <div>
-          <span className="block text-[11px] text-[#9b98ad]">Total raise</span>
-          <span className="text-xs sm:text-sm font-semibold text-white flex items-center gap-1 mt-0.5">
-            {project.goalSol.toLocaleString()} <span className="text-purple-400 font-mono">◎</span>
+          <span className="block text-[11px] text-[#9b98ad]">Raised</span>
+          <span className="text-xs sm:text-sm font-semibold text-white flex items-center gap-1 mt-0.5 font-mono">
+            {isLoading ? (
+              <span className="w-10 h-3 bg-white/10 rounded animate-pulse inline-block" />
+            ) : isError ? (
+              <span className="text-rose-400">—</span>
+            ) : (
+              <>
+                {raisedSol.toFixed(1)} <span className="text-purple-400 font-mono">◎</span>
+              </>
+            )}
           </span>
         </div>
         <div>
-          <span className="block text-[11px] text-[#9b98ad]">Type</span>
-          <span className="text-xs sm:text-sm font-semibold text-white mt-0.5 block truncate">
-            {project.type}
+          <span className="block text-[11px] text-[#9b98ad]">Target</span>
+          <span className="text-xs sm:text-sm font-semibold text-white flex items-center gap-1 mt-0.5 font-mono">
+            {project.goalSol.toLocaleString()} <span className="text-purple-400 font-mono">◎</span>
           </span>
         </div>
         <div>

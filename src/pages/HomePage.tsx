@@ -1,8 +1,8 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef } from 'react';
 import { Hero } from '../components/Hero';
 import { ProjectCard } from '../components/ProjectCard';
 import { Project } from '../types';
-import { getTotalRaised, getTotalUniqueBackers, subscribeProjectStats } from '../lib/ledger';
+import { usePlatformTotalFunding } from '../lib/ledger';
 import { APP_NAME } from '../lib/constants';
 import { Link } from 'react-router-dom';
 import { 
@@ -14,7 +14,8 @@ import {
   CheckCircle2, 
   Sparkles,
   TrendingUp,
-  Cpu
+  Cpu,
+  RefreshCw
 } from 'lucide-react';
 
 interface HomePageProps {
@@ -28,13 +29,14 @@ export const HomePage: React.FC<HomePageProps> = ({ projects }) => {
     projectsSectionRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    return subscribeProjectStats(() => setTick(t => t + 1));
-  }, []);
+  const {
+    totalRaised,
+    totalBackers,
+    isLoading: isTotalsLoading,
+    isError: isTotalsError,
+    refetch: refetchTotals,
+  } = usePlatformTotalFunding(projects);
 
-  const totalRaised = getTotalRaised(projects);
-  const totalBackers = getTotalUniqueBackers(projects.map(p => p.id));
   const totalMilestonesVerified = projects.reduce(
     (acc, p) => acc + p.milestones.filter(m => m.status === 'completed').length,
     0
@@ -50,17 +52,39 @@ export const HomePage: React.FC<HomePageProps> = ({ projects }) => {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 p-6 rounded-3xl glass-panel border border-white/10 bg-[#0a0816]/70">
           <div className="p-3 text-center sm:text-left">
             <span className="text-xs text-[#9b98ad] block">Total Raised</span>
-            <span className="text-2xl sm:text-3xl font-extrabold text-white font-mono mt-1 flex items-center justify-center sm:justify-start gap-1">
-              {totalRaised.toFixed(1)} <span className="text-purple-400 font-mono text-xl">◎</span>
-            </span>
+            {isTotalsLoading ? (
+              <div className="h-8 w-24 bg-white/10 rounded-xl mt-1 animate-pulse" />
+            ) : isTotalsError ? (
+              <div className="flex items-center gap-2 mt-1">
+                <span className="text-2xl sm:text-3xl font-extrabold text-white/50 font-mono">— ◎</span>
+                <button
+                  type="button"
+                  onClick={() => refetchTotals()}
+                  title="Retry"
+                  className="p-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 text-xs cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ) : (
+              <span className="text-2xl sm:text-3xl font-extrabold text-white font-mono mt-1 flex items-center justify-center sm:justify-start gap-1">
+                {totalRaised.toFixed(1)} <span className="text-purple-400 font-mono text-xl">◎</span>
+              </span>
+            )}
             <span className="text-[11px] text-purple-300/70 mt-0.5 block">Solana Devnet SOL</span>
           </div>
 
           <div className="p-3 text-center sm:text-left">
             <span className="text-xs text-[#9b98ad] block">Total Supporters</span>
-            <span className="text-2xl sm:text-3xl font-extrabold text-white font-mono mt-1 block">
-              {totalBackers.toLocaleString()}
-            </span>
+            {isTotalsLoading ? (
+              <div className="h-8 w-20 bg-white/10 rounded-xl mt-1 animate-pulse" />
+            ) : isTotalsError ? (
+              <span className="text-2xl sm:text-3xl font-extrabold text-white/50 font-mono mt-1 block">—</span>
+            ) : (
+              <span className="text-2xl sm:text-3xl font-extrabold text-white font-mono mt-1 block">
+                {totalBackers.toLocaleString()}
+              </span>
+            )}
             <span className="text-[11px] text-emerald-400/80 mt-0.5 block">Unique pledges</span>
           </div>
 

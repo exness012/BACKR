@@ -237,12 +237,11 @@ export async function createContributionTransaction(
 
   // 2. Attach on-chain Memo
   const memoPayload = JSON.stringify({
-    app: 'launchpad',
+    app: 'backr',
     type: 'contribution',
-    project: projectId,
-    title: projectName,
+    project: projectId.trim(),
     amount: amountSol,
-    time: Date.now(),
+    title: projectName || '',
   });
   const memoInstruction = createMemoInstruction(fromPubkey, memoPayload);
   transaction.add(memoInstruction);
@@ -270,13 +269,12 @@ export async function createMilestoneMemoTransaction(
   const transaction = new Transaction();
 
   const memoPayload = JSON.stringify({
-    app: 'launchpad',
+    app: 'backr',
     type: 'milestone',
-    project: projectId,
+    project: projectId.trim(),
     milestoneId,
     milestone: milestoneOrder,
-    proof: proofNote,
-    verifiedAt: Date.now(),
+    proof: proofNote || '',
   });
 
   const memoInstruction = createMemoInstruction(founderPubkey, memoPayload);

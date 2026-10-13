@@ -7,7 +7,7 @@ import {
   shortenAddress 
 } from '../lib/solana';
 import { updateProjectMilestone } from '../lib/api';
-import { recordConfirmedSessionTx } from '../lib/ledger';
+import { notifyLedgerUpdated } from '../lib/ledger';
 import { 
   CheckCircle2, 
   Clock, 
@@ -83,22 +83,10 @@ export const MilestoneTimeline: React.FC<MilestoneTimelineProps> = ({
         console.warn('Milestone confirmation notice:', confirmNotice);
       }
 
-      // Record session transaction
-      recordConfirmedSessionTx({
-        signature,
-        timestamp: Date.now(),
-        fromAddress: publicKey.toBase58(),
-        toAddress: project.treasuryAddress,
-        amountSol: 0,
-        type: 'milestone',
-        projectId: project.id,
-        projectName: project.name,
-        status: 'confirmed',
-        memo: `{"app":"launchpad","type":"milestone","project":"${project.id}","milestone":${activeModalMilestone.order}}`,
-      });
-
       // Update in Firestore backend
       await updateProjectMilestone(project.id, activeModalMilestone.id, signature, proofNote);
+
+      notifyLedgerUpdated();
 
       setActiveModalMilestone(null);
       setProofNote('');

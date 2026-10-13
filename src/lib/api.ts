@@ -112,7 +112,13 @@ export function sanitizeProjectObject(rawProject: unknown): Project {
     discordUrl: typeof clean.discordUrl === 'string' ? clean.discordUrl : '',
     logoUrl: typeof clean.logoUrl === 'string' ? clean.logoUrl : '',
     bannerUrl: typeof clean.bannerUrl === 'string' ? clean.bannerUrl : '',
-    createdAt: typeof clean.createdAt === 'number' ? clean.createdAt : Date.now(),
+    createdAt: typeof clean.createdAt === 'number'
+      ? clean.createdAt
+      : typeof clean.createdAt === 'object' && clean.createdAt !== null && 'seconds' in clean.createdAt
+      ? ((clean.createdAt as { seconds: number }).seconds * 1000)
+      : typeof clean.createdAt === 'string' && !isNaN(Date.parse(clean.createdAt))
+      ? Date.parse(clean.createdAt)
+      : 0,
     milestones: Array.isArray(clean.milestones) ? clean.milestones : [],
     founders: Array.isArray(clean.founders) ? clean.founders : [],
     tokenomics: clean.tokenomics ? (clean.tokenomics as Project['tokenomics']) : {
